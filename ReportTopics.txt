@@ -1,0 +1,4 @@
+Using 2D sprites for 2D and 3D rendering
+    - Fine as spheres have a equal scale across there body
+    - There is no self shadowing or overlapping geometry
+    - If the spheres were to go inside eachother,then the trick would be seen, but with collision detection, this will never happen

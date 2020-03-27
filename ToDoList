@@ -1,0 +1,55 @@
+Optimizations
+- DOD Data Packing
+- Loop unraveling
+- Worker Threads
+- Quad Trees (Prehaps fuzzy quad trees)
+
+
+Features
+- 2D
+- 3D
+
+To Do - Basic
+- Random locations between -1000 and +1000, min and max should be a constant
+- Radious of 1 by default
+- Random Velocity from -5 and +5
+- By default, they do not affect each other on contact
+- Each circle also has a name(string), HP(100) and Color (3 floats)
+
+- Laser
+	- Fires from a random point within the area
+	- Fires in a random direction each time
+	- Hit the first circle each time
+	- Takes 20HP from the circle each time (They do not need to die)
+	- ******Primary objective is to find out if a circle at all has been hit with a laser
+
+- After each shot display the objects name that we hit and the remaining HP
+- Laser shots should be every seccond, but the scene update should be as fast as posible
+- Add a accurate timer to the project to keep track of the preformance of the scene
+- Must use multithreading
+- Must attempt DOD and talk about it in the report
+
+
+ADDITIONAL MARKS
+Visulisation
+	- Visualise the simulation in real time
+	- Visualisation should be a optional feature
+	- When visualising, you do not need to worry about real time preformance
+
+- Have circles die when health hits 0
+- Randomise the circles radious (No min max provided)
+- Add a wall around the enviroment, larger then the starting area
+	- When a ball hits the sides, it bounces back
+	- Wall size is a constant in the program
+
+- Add 3d Spheres but allow 2d circles
+	- Templating to support this is advised
+
+- Support collision between the circles
+	- Should bounce perfectly of each other
+		- He notes it makes it harder to optimise, recommended to do this in a seprate project
+		- This is worth many marks
+
+
+Notes
+- Lauraunt said that he was able to hit 100k objects, aim for that

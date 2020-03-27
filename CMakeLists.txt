@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.6)
 
-set(project_name Vulkan-Demo)
+set(project_name DOD-Demo)
 project(${project_name})
 
 set(HAVE_LIBC TRUE)
@@ -29,5 +29,18 @@ function(add_subdirectory_with_folder _folder_name _folder)
         )
     endforeach()
 endfunction()
+
+
+
+add_subdirectory_with_folder("Third Party/SDL2" third_party/SDL2)
+
+add_subdirectory(third_party/glm)
+
+
+
+include_directories(third_party/SDL2/include)
+include_directories(third_party/Vulkan/Vk-Helper)
+include_directories(third_party/glm)
+
 
 add_subdirectory("Project")
