@@ -10,18 +10,25 @@
 #include <thread>
 #include <condition_variable>
 #include <future>
+#include <algorithm>
+#include <array>
 
 
 
-#define THREE_D 1
+#define THREE_D 0
 #define VISUALISER 1
-#define SPHERE_COUNT 300000
+#define SPHERE_COUNT 12800
 #define TARGET_FPS 30
-#define WORKER_COUNT 10
+#define WORKER_COUNT 128
+#define AREA_SLICE_COUNT 128
 #define DELTA_TIME 1
-// Should we have a heap based array or a stack based array
-#define USE_DYNAMIC_MEMORY 0
 
+
+#if VISUALISER
+// When a frame is about to be rendered, sort the arrays based on the lookup tables to resolve the alpha sorting issues
+// Preformance hit, but inproves visualization
+#define RESOLVE_ALPHA_SORTING 1
+#endif
 
 // Now far can the camera move in and out
 const float kCameraRange[2] = { -200.0f,-1000.0f };
@@ -31,13 +38,28 @@ const float kColorRange[2] = { 0.05f,1.0f };
 const float kSpawnArea[2] = { -1000.0f,1000.0f };
 // Min max distance a sphere could move in the walled area
 const float kWallArea[2] = { -1500.0f,1500.0f };
+
+const float kAreaWidth = kWallArea[1] - kWallArea[0];
 // Sphere min max scale
-const float kSphereScale[2] = { 1.0f,5.0f };
+const float kSphereScale[2] = { 0.5f,4.0f };
 // Sphere min max start velocity
 const float kSphereVelocity[2] = { -5.0f,5.0f };
 // Sphere start hp
 const int kSphereHP = 50;
 
+const float kAreaSliceWidth = kAreaWidth / AREA_SLICE_COUNT;
+
+
+float AreaSliceBoundariesStart[AREA_SLICE_COUNT];
+float AreaSliceBoundariesEnd[AREA_SLICE_COUNT];
+
+// Each worker is allocated a array for each area slice.
+// Each worker will loop through there spheres and see if they fall withn the boundary
+int WorkerAreaBoundaryChecksStart[WORKER_COUNT][AREA_SLICE_COUNT];
+int WorkerAreaBoundaryChecksEnd[WORKER_COUNT][AREA_SLICE_COUNT];
+
+int SphereBoundariesStart[AREA_SLICE_COUNT];
+int SphereBoundariesEnd[AREA_SLICE_COUNT];
 
 // Move the compile time sphere count into a valid platform unsigned int
 const uint32_t sphere_count = SPHERE_COUNT;
@@ -57,11 +79,16 @@ bool can_render;
 std::condition_variable render_work_ready;
 float deltaTime;
 
+
+// Used to store 
+unsigned int current_lockup_table = 0;
+unsigned int SphereLookupTable[2][sphere_count];
+
 struct WorkerTask
 {
 	unsigned int offset;
 	unsigned int count;
-	std::packaged_task<void(unsigned int, unsigned int)> task;
+	std::packaged_task<void(unsigned int, unsigned int, unsigned int)> task;
 };
 
 WorkerTask tasks[NumWorkers];
@@ -93,33 +120,7 @@ constexpr unsigned int sphere_name_length = GetNumberOfDigits(sphere_count);
 const unsigned int sphere_name_array_size = sphere_name_length * sphere_count;
 const unsigned int sphere_color_array_size = sphere_count * 4;
 
-#if USE_DYNAMIC_MEMORY
-struct
-{
-	float* X;
-	float* Y;
-#if THREE_D
-	float* Z;
-#endif
-	float* Scale;
-}spheres;
-float* SphereData;
-std::unique_ptr<float> SphereDataMemSafe = nullptr;
 
-
-char* sphere_names;
-std::unique_ptr<char> SphereNamesMemSafe = nullptr;
-
-float* sphere_velocity;
-std::unique_ptr<float> SphereVelocityMemSafe = nullptr;
-
-float* sphere_hp;
-std::unique_ptr<float> SphereHPMemSafe = nullptr;
-
-float* sphere_color;
-std::unique_ptr<float> SphereColorMemSafe = nullptr;
-
-#else
 static union
 {
 	struct
@@ -135,14 +136,23 @@ static union
 };
 char sphere_names[sphere_name_array_size]{ 0 };
 
-float sphere_velocity[sphere_velocity_array_size]{ 0 };
+static union
+{
+	struct
+	{
+		float X[sphere_count];
+		float Y[sphere_count];
+#if THREE_D
+		float Z[sphere_count];
+#endif
+	}velocity;
+	float sphere_velocity[sphere_velocity_array_size]{ 0 };
+};
 
 float sphere_hp[sphere_count]{ 0 };
 
 float sphere_color[sphere_color_array_size]{ 0 };
 
-
-#endif
 
 float line_position[6]{ 0 };
 
@@ -188,7 +198,7 @@ void Worker(unsigned int id)
 			};
 		}
 
-		tasks[id].task(tasks[id].offset, tasks[id].count);
+		tasks[id].task(id, tasks[id].offset, tasks[id].count);
 
 
 		{
@@ -201,13 +211,13 @@ void Worker(unsigned int id)
 	}
 }
 
-__forceinline void StartTask(std::function<void(unsigned int, unsigned int)> funcPtr, unsigned int perWorker)
+__forceinline void StartTask(std::function<void(unsigned int, unsigned int, unsigned int)> funcPtr, unsigned int perWorker, unsigned int workerCount = NumWorkers)
 {
-	for (int i = 0; i < NumWorkers; ++i)
+	for (int i = 0; i < workerCount; ++i)
 	{
 		tasks[i].offset = i * perWorker;
 		tasks[i].count = perWorker;
-		tasks[i].task = std::packaged_task<void(unsigned int, unsigned int)>(funcPtr);
+		tasks[i].task = std::packaged_task<void(unsigned int, unsigned int, unsigned int)>(funcPtr);
 		{ // Only use haveWork if other thread is not
 			std::unique_lock<std::mutex> lock(worker_mutex[i]);
 			have_work[i] = true;
@@ -1894,7 +1904,7 @@ void FindClosestLineIntersections()
 
 
 		float dot = (
-			((spheres.X[i] - line_position[0]) * lineAltDistX)
+			  ((spheres.X[i] - line_position[0]) * lineAltDistX)
 			+ ((spheres.Y[i] - line_position[1]) * lineAltDistY)
 #if THREE_D
 			+ ((spheres.Z[i] - line_position[2]) * lineAltDistZ)
@@ -1936,7 +1946,7 @@ void FindClosestLineIntersections()
 }
 
 
-void WorkerSetupSimulation(unsigned int offset, unsigned int count)
+void WorkerSetupSimulation(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	// For this we setup all sphere data that needs the random function first so that the CPU can cache the function
 
@@ -1953,6 +1963,9 @@ void WorkerSetupSimulation(unsigned int offset, unsigned int count)
 			spheres.Scale[i] = Random(kSphereScale[0], kSphereScale[1]);
 
 			sphere_hp[i] = kSphereHP;
+
+			// Setup the lookup table so element 1
+			SphereLookupTable[current_lockup_table][i] = i;
 		}
 	}
 
@@ -2028,6 +2041,14 @@ void WorkerSetupSimulation(unsigned int offset, unsigned int count)
 
 void SetupSimulation()
 {
+	float sphere_rad = kSphereScale[1] / 2;
+	for (unsigned int i = 0; i < AREA_SLICE_COUNT; ++i)
+	{
+		AreaSliceBoundariesStart[i] = kWallArea[0] + (kAreaSliceWidth * i) - sphere_rad;
+		AreaSliceBoundariesEnd[i] = kWallArea[0] + (kAreaSliceWidth * (i + 1)) + sphere_rad;
+	}
+
+
 	// Reset delta time
 	delta_time = SDL_GetPerformanceCounter();
 
@@ -2036,42 +2057,616 @@ void SetupSimulation()
 		threads[i] = std::thread(Worker, i);
 	}
 
-	// If we select that we want to use dynamic memory, we manualy allocate and define the pointers
-	// Pointers are wrapped in a smart pointer to avoid memory leaks
-#if USE_DYNAMIC_MEMORY
-	SphereDataMemSafe = std::unique_ptr<float>(new float[sphere_position_array_length]);
-	float* tempPrt = SphereDataMemSafe.get();
-	SphereData = tempPrt;
-	spheres.X = tempPrt;
-	tempPrt += sphere_count;
-	spheres.Y = tempPrt;
-	tempPrt += sphere_count;
-#if THREE_D
-	spheres.Z = tempPrt;
-	tempPrt += sphere_count;
-#endif
-	spheres.Scale = tempPrt;
-
-	SphereNamesMemSafe = std::unique_ptr<char>(new char[sphere_name_array_size] { '0' });
-	sphere_names = SphereNamesMemSafe.get();
-
-	SphereVelocityMemSafe = std::unique_ptr<float>(new float[sphere_velocity_array_size] { 0 });
-	sphere_velocity = SphereVelocityMemSafe.get();
-
-	SphereHPMemSafe = std::unique_ptr<float>(new float[sphere_count] { 0 });
-	sphere_hp = SphereHPMemSafe.get();
-
-	SphereColorMemSafe = std::unique_ptr<float>(new float[sphere_color_array_size] { 0 });
-	sphere_color = SphereColorMemSafe.get();
-
-
-#endif
 
 	StartTask(WorkerSetupSimulation, sphere_worker_groups);
 	WaitForWorkers();
 }
 
-void WorkerSimulateSphere(unsigned int offset, unsigned int count)
+void swap(unsigned int* a, unsigned int* b)
+{
+	unsigned int t = *a;
+	*a = *b;
+	*b = t;
+}
+
+// Quicksort Solution https://www.geeksforgeeks.org/cpp-program-for-quicksort/
+__forceinline int QuicksortPartition(int low, int high)
+{
+#if THREE_D
+	float pivot = spheres.Z[SphereLookupTable[current_lockup_table][high]];    // pivot 
+#else
+	float pivot = spheres.X[SphereLookupTable[current_lockup_table][high]];    // pivot 
+#endif
+	int i = (low - 1);  // Index of smaller element 
+
+	for (int j = low; j <= high - 1; j++)
+	{
+		// If current element is smaller than or 
+		// equal to pivot 
+#if THREE_D
+		if (spheres.Z[SphereLookupTable[current_lockup_table][j]] <= pivot)
+#else
+		if (spheres.X[SphereLookupTable[current_lockup_table][j]] <= pivot)
+#endif
+		{
+			i++;
+			swap(&SphereLookupTable[current_lockup_table][i], &SphereLookupTable[current_lockup_table][j]);
+		}
+	}
+	swap(&SphereLookupTable[current_lockup_table][i + 1], &SphereLookupTable[current_lockup_table][high]);
+	return (i + 1);
+}
+
+
+void QuickSort(int low, int high)
+{
+	if (low < high)
+	{
+		/* pi is partitioning index, arr[p] is now
+		   at right place */
+		int pi = QuicksortPartition(low, high);
+
+		// Separately sort elements before 
+		// partition and after partition 
+		QuickSort(low, pi - 1);
+		QuickSort(pi + 1, high);
+	}
+}
+
+void WorkerQuickSort(unsigned int worker_id, unsigned int offset, unsigned int count)
+{
+	QuickSort(offset, offset + count - 1);
+}
+
+__forceinline float NormaliseAxis(float a, float length)
+{
+	return a / length;
+}
+#if THREE_D
+
+void Reflect(float & rx, float & ry, float & rz, 
+	float vx, float vy, float vz, 
+	float nx, float ny, float nz)
+{
+	float dot = vx * nx + vy * ny + vz * nz;
+	rx = 2 * dot * nx - vx;
+	ry = 2 * dot * ny - vy;
+	rz = 2 * dot * nz - vz;
+}
+__forceinline float LengthOfVector(float x, float y, float z)
+{
+	return sqrt(x * x + y * y + z * z);
+}
+__forceinline float Dot(float x1, float x2, float y1, float y2, float z1, float z2)
+{
+	return x1 * x2 + y1 * y1 + z1 * z1;
+}
+
+__forceinline bool SphereColision(float s1x, float s1y, float s1z, float s1r, float s2x, float s2y, float s2z, float s2r,
+	float svx, float svy, float svz, float vl, float& distance)
+{
+	float Cx = s2x - s1x;
+	float Cy = s2y - s1y;
+	float Cz = s2z - s1z;
+	float lengthC = LengthOfVector(Cx, Cy, Cz);
+
+	float sumRadii = (s2r + s1r);
+
+	if (vl < lengthC - sumRadii)
+	{
+		return false;
+	}
+	float Nx = NormaliseAxis(svx, vl);
+	float Ny = NormaliseAxis(svy, vl);
+	float Nz = NormaliseAxis(svz, vl);
+
+	float D = Dot(Nx, Cx, Ny, Cy,Nz, Cz);
+
+	if (D <= 0)
+	{
+		return false;
+	}
+
+	float F = (lengthC * lengthC) - (D * D);
+
+	float sumRadiiSquared = sumRadii * sumRadii;
+	if (F >= sumRadiiSquared)
+	{
+		return false;
+	}
+
+	float T = sumRadiiSquared - F;
+
+	if (T < 0)
+	{
+		return false;
+	}
+	distance = D - sqrt(T);
+
+
+	if (vl < distance)
+	{
+		return false;
+	}
+
+	return true;
+}
+#else
+
+void Reflect(float & rx, float & ry, float vx, float vy, float nx, float ny)
+{
+	float dot = vx * nx + vy * ny;
+	rx = 2 * dot * nx - vx;
+	ry = 2 * dot * ny - vy;
+}
+__forceinline float LengthOfVector(float x, float y)
+{
+	return sqrt(x * x + y * y);
+}
+__forceinline float Dot(float x1, float x2, float y1, float y2)
+{
+	return x1 * x2 + y1 * y1;
+}
+
+
+__forceinline bool CircleColision(float s1x, float s1y, float s1r, float s2x, float s2y, float s2r,
+	float svx, float svy, float vl, float& distance)
+{
+	float Cx = s2x - s1x;
+	float Cy = s2y - s1y;
+	float lengthC = LengthOfVector(Cx, Cy);
+
+	float sumRadii = (s2r + s1r);
+
+	if (vl < lengthC - sumRadii)
+	{
+		return false;
+	}
+	float Nx = NormaliseAxis(svx, vl);
+	float Ny = NormaliseAxis(svy, vl);
+
+	float D = Dot(Nx, Cx, Ny, Cy);
+
+	if (D <= 0)
+	{
+		return false;
+	}
+
+	float F = (lengthC * lengthC) - (D * D);
+
+	float sumRadiiSquared = sumRadii * sumRadii;
+	if (F >= sumRadiiSquared)
+	{
+		return false;
+	}
+
+	float T = sumRadiiSquared - F;
+
+	if (T < 0)
+	{
+		return false;
+	}
+	distance = D - sqrt(T);
+
+
+	if (vl < distance)
+	{
+		return false;
+	}
+
+	return true;
+}
+#endif
+
+
+
+
+
+
+
+void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned int b)
+{
+
+	unsigned int offset = SphereBoundariesStart[worker_id];
+	unsigned int count = (SphereBoundariesEnd[worker_id] - SphereBoundariesStart[worker_id]) + 1;
+	unsigned int max = offset + count;
+
+	unsigned int s1, s2, sphere1lookup, sphere2lookup;
+
+	for (s1 = offset; s1 < max; ++s1)
+	{
+		sphere1lookup = SphereLookupTable[current_lockup_table][s1];
+#if DELTA_TIME
+		float s1vx = velocity.X[sphere1lookup] * deltaTime;
+		float s1vy = velocity.Y[sphere1lookup] * deltaTime;
+#if THREE_D
+		float s1vz = velocity.Z[sphere1lookup] * deltaTime;
+#endif
+#else
+		float s1vx = velocity.X[sphere1lookup];
+		float s1vy = velocity.Y[sphere1lookup];
+#if THREE_D
+		float s1vz = velocity.Z[sphere1lookup];
+#endif
+#endif
+
+#if THREE_D
+		float s1vl = LengthOfVector(s1vx, s1vy, s1vz);
+#else
+		float s1vl = LengthOfVector(s1vx, s1vy);
+#endif
+
+		for (s2 = offset; s2 < max; ++s2)
+		{
+			if (s1 == s2)
+				continue;
+			sphere2lookup = SphereLookupTable[current_lockup_table][s2];
+#if DELTA_TIME
+			float s2vx = velocity.X[sphere2lookup] * deltaTime;
+			float s2vy = velocity.Y[sphere2lookup] * deltaTime;
+#if THREE_D
+			float s2vz = velocity.Z[sphere2lookup] * deltaTime;
+#endif
+#else
+			float s2vx = velocity.X[sphere2lookup];
+			float s2vy = velocity.Y[sphere2lookup];
+#if THREE_D
+			float s2vz = velocity.Z[sphere2lookup];
+#endif
+#endif
+#if THREE_D
+			float s2vl = LengthOfVector(s2vx, s2vy, s2vz);
+#else
+			float s2vl = LengthOfVector(s2vx, s2vy);
+#endif
+
+			float distanceAV;
+#if THREE_D
+			if (SphereColision(spheres.X[sphere1lookup], spheres.Y[sphere1lookup], spheres.Z[sphere1lookup], spheres.Scale[sphere1lookup],
+				spheres.X[sphere2lookup], spheres.Y[sphere2lookup], spheres.Z[sphere2lookup], spheres.Scale[sphere2lookup],
+				s1vx, s1vy, s1vz, s1vl, distanceAV))
+			{
+
+				s1vx = NormaliseAxis(s1vx, s1vl);
+				s1vy = NormaliseAxis(s1vy, s1vl);
+				s1vz = NormaliseAxis(s1vz, s1vl);
+				s1vx *= distanceAV;
+				s1vy *= distanceAV;
+				s1vz *= distanceAV;
+
+				spheres.X[sphere1lookup] += s1vx;
+				spheres.Y[sphere1lookup] += s1vy;
+				spheres.Z[sphere1lookup] += s1vz;
+
+				float rx, ry, rz;
+
+				float s2vxn = NormaliseAxis(s2vx, s2vl);
+				float s2vyn = NormaliseAxis(s2vy, s2vl);
+				float s2vzn = NormaliseAxis(s2vz, s2vl);
+
+
+				Reflect(rx, ry, rz, 
+					NormaliseAxis(velocity.X[sphere1lookup], s1vl), 
+					NormaliseAxis(velocity.Y[sphere1lookup], s1vl), 
+					NormaliseAxis(velocity.Z[sphere1lookup], s1vl),
+					s2vxn, s2vyn, s2vzn);
+
+				velocity.X[sphere1lookup] = rx * s1vl;
+				velocity.Y[sphere1lookup] = ry * s1vl;
+				velocity.Z[sphere1lookup] = rz * s1vl;
+
+#if DELTA_TIME
+				s1vx = velocity.X[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
+				s1vy = velocity.Y[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
+				s1vz = velocity.Z[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
+#else
+				s1vx = velocity.X[sphere1lookup] * abs(distanceAV - 1.0f);
+				s1vy = velocity.Y[sphere1lookup] * abs(distanceAV - 1.0f);
+				s1vz = velocity.Z[sphere1lookup] * abs(distanceAV - 1.0f);
+#endif
+				break;
+
+		}
+#else
+			if (CircleColision(spheres.X[sphere1lookup], spheres.Y[sphere1lookup], spheres.Scale[sphere1lookup],
+				spheres.X[sphere2lookup], spheres.Y[sphere2lookup], spheres.Scale[sphere2lookup],
+				s1vx, s1vy, s1vl, distanceAV))
+			{
+
+				s1vx = NormaliseAxis(s1vx, s1vl);
+				s1vy = NormaliseAxis(s1vy, s1vl);
+				s1vx *= distanceAV;
+				s1vy *= distanceAV;
+
+				spheres.X[sphere1lookup] += s1vx;
+				spheres.Y[sphere1lookup] += s1vy;
+
+				float rx, ry;
+
+				float s2vxn = NormaliseAxis(s2vx, s2vl);
+				float s2vyn = NormaliseAxis(s2vy, s2vl);
+
+
+				Reflect(rx, ry, NormaliseAxis(velocity.X[sphere1lookup], s1vl), NormaliseAxis(velocity.Y[sphere1lookup], s1vl), s2vxn, s2vyn);
+
+				velocity.X[sphere1lookup] = rx * s1vl;
+				velocity.Y[sphere1lookup] = ry * s1vl;
+
+#if DELTA_TIME
+				s1vx = velocity.X[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
+				s1vy = velocity.Y[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
+#else
+				s1vx = velocity.X[sphere1lookup] * abs(distanceAV - 1.0f);
+				s1vy = velocity.Y[sphere1lookup] * abs(distanceAV - 1.0f);
+#endif
+
+				break;
+
+			}
+#endif
+		}
+		spheres.X[sphere1lookup] += s1vx;
+		if (spheres.X[sphere1lookup] < kWallArea[0] || spheres.X[sphere1lookup] > kWallArea[1])
+		{
+			velocity.X[sphere1lookup] = -velocity.X[sphere1lookup];
+			spheres.X[sphere1lookup] += velocity.X[sphere1lookup];
+		}
+
+		spheres.Y[sphere1lookup] += s1vy;
+		if (spheres.Y[sphere1lookup] < kWallArea[0] || spheres.Y[sphere1lookup] > kWallArea[1])
+		{
+			velocity.Y[sphere1lookup] = -velocity.Y[sphere1lookup];
+			spheres.Y[sphere1lookup] += velocity.Y[sphere1lookup];
+		}
+
+#if THREE_D
+		spheres.Z[sphere1lookup] += s1vz;
+		if (spheres.Z[sphere1lookup] < kWallArea[0] || spheres.Z[sphere1lookup] > kWallArea[1])
+		{
+			velocity.Z[sphere1lookup] = -velocity.Z[sphere1lookup];
+			spheres.Z[sphere1lookup] += velocity.Z[sphere1lookup];
+		}
+#endif
+	}
+
+}
+
+void WorkerAlphaSort(unsigned int worker_id, unsigned int offset, unsigned int count)
+{
+
+	unsigned int currentLookup;
+	float* position_buffer = reinterpret_cast<float*>(position_mapped_buffer_memory);
+	float* color_buffer = reinterpret_cast<float*>(color_mapped_buffer_memory);
+
+
+	// Loop unraveled transfer of colors to the GPU
+
+	unsigned int max = offset + count;
+	unsigned int color_max = max * 4;
+	for (unsigned int i = offset * 4, j = offset; i < color_max;)
+	{
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+	}
+
+
+	// X position loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+	}
+	// Y position loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+	}
+	unsigned int position_offset = sphere_count * 2;
+#if THREE_D
+	// Z position loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+	}
+	position_offset += sphere_count;
+#endif
+	// Scale loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+	}
+	
+}
+
+void WorkerBubbleSort(unsigned int worker_id, unsigned int offset, unsigned int count)
+{
+	unsigned int max = offset + count;
+	unsigned int j = 0;
+	unsigned int temp;
+	for (unsigned int i = offset; i < max; i++)
+	{
+		for (j = i + 1; j < max; j++)
+		{
+#if THREE_D
+			if (spheres.Z[SphereLookupTable[current_lockup_table][j]] <
+				spheres.Z[SphereLookupTable[current_lockup_table][i]])
+#else
+			if (spheres.X[SphereLookupTable[current_lockup_table][j]] <
+				spheres.X[SphereLookupTable[current_lockup_table][i]])
+#endif
+			{
+				temp = SphereLookupTable[current_lockup_table][i];
+				SphereLookupTable[current_lockup_table][i] = SphereLookupTable[current_lockup_table][j];
+				SphereLookupTable[current_lockup_table][j] = temp;
+			}
+		}
+	}
+}
+
+void WorkerBoundaryFinder(unsigned int worker_id, unsigned int offset, unsigned int count)
+{
+	// Used for loop index
+	unsigned int i = 0;
+	// Reset all the found spheres that meet that boundary
+	for (i = 0; i < AREA_SLICE_COUNT; ++i)
+	{
+		WorkerAreaBoundaryChecksStart[worker_id][i] = -1;
+		WorkerAreaBoundaryChecksEnd[worker_id][i] = -1;
+	}
+
+
+
+
+	// What boundary are we looking for the largest sphere
+	unsigned int checkingBoundary = 0;
+
+
+	unsigned int max = offset + count;
+	for (checkingBoundary = 0; checkingBoundary < AREA_SLICE_COUNT; ++checkingBoundary)
+	{
+		for (i = offset; i < max; ++i)
+		{
+#if THREE_D
+			bool start = spheres.Z[SphereLookupTable[current_lockup_table][i]] > AreaSliceBoundariesStart[checkingBoundary];
+			bool end = spheres.Z[SphereLookupTable[current_lockup_table][i]] < AreaSliceBoundariesEnd[checkingBoundary];
+#else
+			bool start = spheres.X[SphereLookupTable[current_lockup_table][i]] > AreaSliceBoundariesStart[checkingBoundary];
+			bool end = spheres.X[SphereLookupTable[current_lockup_table][i]] < AreaSliceBoundariesEnd[checkingBoundary];
+#endif
+			if (!start && end)
+				continue;
+
+			if (start && end)
+			{
+				if (WorkerAreaBoundaryChecksStart[worker_id][checkingBoundary] < 0)
+				{
+					WorkerAreaBoundaryChecksStart[worker_id][checkingBoundary] = i;
+				}
+
+				WorkerAreaBoundaryChecksEnd[worker_id][checkingBoundary] = i;
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
+
+}
+
+void WorkerMergeSortedArray(unsigned int worker_id, unsigned int offset, unsigned int count)
+{
+	unsigned int half_way = count / 2;
+
+	unsigned int* sorted_array_1 = &SphereLookupTable[current_lockup_table][offset];
+	unsigned int* sorted_array_2 = &SphereLookupTable[current_lockup_table][offset + half_way];
+
+	unsigned int* target_array = &SphereLookupTable[(current_lockup_table + 1) % 2][offset];
+
+	int i = 0, j = 0, k = 0;
+	while (i < half_way && j < half_way)
+	{
+		// If we are in 3D we want to sort by the z buffer so we can also resolve the alpha depth order at the same time!
+#if THREE_D
+		if (spheres.Z[sorted_array_1[i]] < spheres.Z[sorted_array_2[j]])
+#else
+		if (spheres.X[sorted_array_1[i]] < spheres.X[sorted_array_2[j]])
+#endif
+			target_array[k++] = sorted_array_1[i++];
+		else
+			target_array[k++] = sorted_array_2[j++];
+	}
+	while (i < half_way)
+		target_array[k++] = sorted_array_1[i++];
+	while (j < half_way)
+		target_array[k++] = sorted_array_2[j++];
+
+}
+
+void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	unsigned int end = offset + count;
 
@@ -2248,8 +2843,9 @@ void WorkerSimulateSphere(unsigned int offset, unsigned int count)
 
 int main(int argc, char **argv)
 {
-	static_assert(SPHERE_COUNT % 100 == 0, "Sphere count needs to be in multiples of 100 for worker thread grouping and loop unraveling");
-	static_assert(SPHERE_COUNT % NumWorkers == 0, "Sphere count needs to be devisible by the number of workers!");
+	static_assert((SPHERE_COUNT / NumWorkers) % 10 == 0, "Sphere count needs to be in multiples of 10 for worker thread grouping and loop unraveling");
+	static_assert(SPHERE_COUNT % 8 == 0, "Sphere count needs to be in powers of 2 for sorting optimization");
+	static_assert(SPHERE_COUNT % NumWorkers == 0, "Sphere count needs to be a multiple of NumWorkers");
 	SetupSimulation();
 
 #if VISUALISER
@@ -2258,13 +2854,6 @@ int main(int argc, char **argv)
 
 
 
-
-
-	
-
-
-
-	float sr = 3.0f;
 
 	float syncDelta = 0.0f;
 	float secondDelta = 0.0f;
@@ -2289,11 +2878,22 @@ int main(int argc, char **argv)
 		if (hasRendered)
 		{
 			syncDelta -= kTargetFPS;
+
+
+#if RESOLVE_ALPHA_SORTING
+
+			StartTask(WorkerAlphaSort, sphere_count / NumWorkers, NumWorkers);
+			WaitForWorkers();
+
+#else
 			memcpy(
 				position_mapped_buffer_memory,                                           // The destination for our memory (GPU)
 				SphereData,                                                              // Source for the memory (CPU-Ram)
 				position_buffer_size                                                     // How much data we are transfering
 			);
+#endif
+
+
 
 			{ // Only use haveWork if other thread is not
 				std::unique_lock<std::mutex> lock(renderer_lock);
@@ -2304,28 +2904,74 @@ int main(int argc, char **argv)
 		}
 #endif
 
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();
-		StartTask(WorkerSimulateSphere, sphere_worker_groups);
+		/*StartTask(WorkerSimulateSphere, sphere_worker_groups);
+		WaitForWorkers();*/
+		//StartTask(WorkerQuickSort, sphere_count / 16, 16);
+		StartTask(WorkerBubbleSort, sphere_count / NumWorkers, NumWorkers);
 		WaitForWorkers();
 
-		simulation_ticks+=10;
+		StartTask(WorkerMergeSortedArray, sphere_count / 64, 64);
+		WaitForWorkers();
+		current_lockup_table = (current_lockup_table + 1) % 2;
+
+		StartTask(WorkerMergeSortedArray, sphere_count / 32, 32);
+		WaitForWorkers();
+		current_lockup_table = (current_lockup_table + 1) % 2;
+
+		StartTask(WorkerMergeSortedArray, sphere_count / 16, 16);
+		WaitForWorkers();
+		current_lockup_table = (current_lockup_table + 1) % 2;
+
+		StartTask(WorkerMergeSortedArray, sphere_count / 8, 8);
+		WaitForWorkers();
+		current_lockup_table = (current_lockup_table + 1) % 2;
+
+		StartTask(WorkerMergeSortedArray, sphere_count / 4, 4);
+		WaitForWorkers();
+		current_lockup_table = (current_lockup_table + 1) % 2;
+
+		StartTask(WorkerMergeSortedArray, sphere_count / 2, 2);
+		WaitForWorkers();
+		current_lockup_table = (current_lockup_table + 1) % 2;
+		WorkerMergeSortedArray(0, 0, sphere_count);
+		current_lockup_table = (current_lockup_table + 1) % 2;
+
+		StartTask(WorkerBoundaryFinder, sphere_count / NumWorkers, NumWorkers);
+		WaitForWorkers();
+
+		for (unsigned int j = 0; j < AREA_SLICE_COUNT; ++j)
+		{
+			SphereBoundariesStart[j] = -1;
+			SphereBoundariesEnd[j] = -1;
+		}
+
+		for (unsigned int i = 0; i < WORKER_COUNT; ++i)
+		{
+			for (unsigned int j = 0; j < AREA_SLICE_COUNT; ++j)
+			{
+				// Boundary Start
+				if (SphereBoundariesStart[j] < 0)
+				{
+					SphereBoundariesStart[j] = WorkerAreaBoundaryChecksStart[i][j];
+				}
+				// Boundary End
+				if (WorkerAreaBoundaryChecksEnd[i][j] > -1)
+				{
+					SphereBoundariesEnd[j] = WorkerAreaBoundaryChecksEnd[i][j];
+				}
+			} 
+		}
+
+
+		StartTask(WorkerCollisionDetection, sphere_count / AREA_SLICE_COUNT, AREA_SLICE_COUNT);
+		WaitForWorkers();
+
+		/*for (unsigned int j = 0; j < AREA_SLICE_COUNT; ++j)
+		{
+			std::cout << SphereBoundariesEnd[j] - SphereBoundariesStart[j] << std::endl;
+		}*/
+
+		simulation_ticks += 1;// 0;
 
 #if VISUALISER
 		if (hasRendered)
