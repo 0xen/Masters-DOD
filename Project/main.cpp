@@ -19,7 +19,7 @@
 #define VISUALISER 1
 #define SPHERE_TO_SPHERE_COLLISION 1
 #define SPHERE_DEATH 1;
-#define SPHERE_COUNT 12800
+#define SPHERE_COUNT 38400
 #define TARGET_FPS 30
 #define WORKER_COUNT 128
 #define AREA_SLICE_COUNT 128
@@ -43,7 +43,7 @@ const float kWallArea[2] = { -1500.0f,1500.0f };
 
 const float kAreaWidth = kWallArea[1] - kWallArea[0];
 // Sphere min max scale
-const float kSphereScale[2] = { 1.0f,5.0f };
+const float kSphereScale[2] = { 1.0f,2.5f };
 // Sphere min max start velocity
 const float kSphereVelocity[2] = { -5.0f,5.0f };
 // Sphere start hp
@@ -2029,6 +2029,9 @@ void FindClosestLineIntersections(unsigned int worker_id, unsigned int offset, u
 
 	float startSphereXDiffrence, startSphereYDiffrence, lengthToStart;
 
+#if THREE_D
+	float startSphereZDiffrence;
+#endif
 	unsigned int currentSphereLookup;
 
 	for (int i = offset; i < max; i++)
@@ -2118,8 +2121,6 @@ void FindClosestLineIntersections(unsigned int worker_id, unsigned int offset, u
 
 		if (sphereToClosest < spheres.Scale[currentSphereLookup])
 		{
-			//std::cout << "Line collided with" << i << std::endl;
-
 			// If we have not found a closer sphere yet
 			// Due to branch prediction, the CPU will auto asume the result of this based on previous results making this check marganaly slow
 			if (line_sphere_index[worker_id] <0)
@@ -2910,6 +2911,9 @@ int main(int argc, char **argv)
 		WorkerMergeSortedArray(0, 0, sphere_count);
 		current_lockup_table = (current_lockup_table + 1) % 2;
 
+		// If collision detection is dissabled, we do not need to find the bounderys of the areas
+		// as only sphere to sphere collision use this
+#if SPHERE_TO_SPHERE_COLLISION
 		StartTask(WorkerBoundaryFinder, sphere_count / NumWorkers, NumWorkers);
 		WaitForWorkers();
 
@@ -2935,7 +2939,7 @@ int main(int argc, char **argv)
 				}
 			} 
 		}
-
+#endif
 		if (secondDelta > 1.0f)
 		{
 			secondDelta -= 1.0f;
