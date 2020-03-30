@@ -17,6 +17,8 @@
 
 #define THREE_D 0
 #define VISUALISER 1
+#define SPHERE_TO_SPHERE_COLLISION 1
+#define SPHERE_DEATH 1;
 #define SPHERE_COUNT 12800
 #define TARGET_FPS 30
 #define WORKER_COUNT 128
@@ -31,7 +33,7 @@
 #endif
 
 // Now far can the camera move in and out
-const float kCameraRange[2] = { -200.0f,-1000.0f };
+const float kCameraRange[2] = { -100.0f,-1000.0f };
 // Color min and max range
 const float kColorRange[2] = { 0.05f,1.0f };
 // Min max range of the sphere spawn
@@ -41,11 +43,13 @@ const float kWallArea[2] = { -1500.0f,1500.0f };
 
 const float kAreaWidth = kWallArea[1] - kWallArea[0];
 // Sphere min max scale
-const float kSphereScale[2] = { 0.5f,4.0f };
+const float kSphereScale[2] = { 1.0f,5.0f };
 // Sphere min max start velocity
 const float kSphereVelocity[2] = { -5.0f,5.0f };
 // Sphere start hp
 const int kSphereHP = 50;
+// How much each laser hit deals to the spheres
+const int kLaserDamage = 20;
 
 const float kAreaSliceWidth = kAreaWidth / AREA_SLICE_COUNT;
 
@@ -149,12 +153,17 @@ static union
 	float sphere_velocity[sphere_velocity_array_size]{ 0 };
 };
 
-float sphere_hp[sphere_count]{ 0 };
+int sphere_hp[sphere_count]{ 0 };
 
 float sphere_color[sphere_color_array_size]{ 0 };
 
 
 float line_position[6]{ 0 };
+
+// If the worker fonud a sphere that the line collides with, how far from the start was it
+float line_sphere_colision_distance[NumWorkers];
+// If we found a sphere that the line collided with, what is its non lookup table id
+int line_sphere_index[NumWorkers];
 
 #include <SDL.h>
 #include <SDL_syswm.h>
@@ -1601,7 +1610,10 @@ void CreatePipelines()
 			dynamic_states,
 			VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
 			VK_POLYGON_MODE_FILL,
-			1.0f
+			1.0f,
+			VK_CULL_MODE_BACK_BIT,
+			VK_FALSE,
+			VK_FALSE
 		);
 	}
 	
@@ -1816,6 +1828,137 @@ void StartRenderer()
 	renderer = std::thread(RendererThread);
 }
 
+
+void WorkerAlphaSort(unsigned int worker_id, unsigned int offset, unsigned int count)
+{
+
+	unsigned int currentLookup;
+	float* position_buffer = reinterpret_cast<float*>(position_mapped_buffer_memory);
+	float* color_buffer = reinterpret_cast<float*>(color_mapped_buffer_memory);
+
+
+	// Loop unraveled transfer of colors to the GPU
+
+	unsigned int max = offset + count;
+	unsigned int color_max = max * 4;
+	for (unsigned int i = offset * 4, j = offset; i < color_max;)
+	{
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
+		color_buffer[i++] = sphere_color[currentLookup++]; // R
+		color_buffer[i++] = sphere_color[currentLookup++]; // G
+		color_buffer[i++] = sphere_color[currentLookup++]; // B
+		++i; // Alpha generated on GPU
+	}
+
+
+	// X position loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
+	}
+	// Y position loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
+	}
+	unsigned int position_offset = sphere_count * 2;
+#if THREE_D
+	// Z position loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
+	}
+	position_offset += sphere_count;
+#endif
+	// Scale loop unraveled
+	for (unsigned int i = offset; i < max;)
+	{
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
+	}
+
+}
+
 #endif
 
 
@@ -1849,18 +1992,17 @@ void GenerateNewRay()
 }
 
 
-void FindClosestLineIntersections()
+void FindClosestLineIntersections(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
+	// Get the diffrence between the two end points of all the 
 	float lineDistX = line_position[0] - line_position[3];
-	float lineAltDistX = line_position[3] - line_position[0];
 	float lineDistY = line_position[1] - line_position[4];
-	float lineAltDistY = line_position[4] - line_position[1];
 
 #if THREE_D
 	float lineDistZ = line_position[2] - line_position[5];
-	float lineAltDistZ = line_position[5] - line_position[2];
 #endif
 
+	// Calculate the lines full length
 	float llen = sqrt(
 		(lineDistX*lineDistX)
 		+ (lineDistY*lineDistY)
@@ -1869,21 +2011,59 @@ void FindClosestLineIntersections()
 #endif;
 	);
 
+	// Gethalf the length of the line
 	float llenHalf = llen / 2;
 
-	float lineCenterX = (line_position[0] + line_position[3]) / 2;
-	float lineCenterY = (line_position[1] + line_position[4]) / 2;
+	float lineCenterX = lineDistX / 2;
+	float lineCenterY = lineDistY / 2;
 #if THREE_D
-	float lineCenterZ = (line_position[2] + line_position[5]) / 2;
+	float lineCenterZ = lineDistZ / 2;
 #endif;
 
+	// precalculate the line length to the power of 2
 	float linePow = pow(llen, 2);
-	for (int i = 0; i < sphere_count; i++)
+	unsigned int max = offset + count;
+
+	line_sphere_index[worker_id] = -1;
+	line_sphere_colision_distance[worker_id] = 0.0f;
+
+	float startSphereXDiffrence, startSphereYDiffrence, lengthToStart;
+
+	unsigned int currentSphereLookup;
+
+	for (int i = offset; i < max; i++)
 	{
-		float startLineToSphereDistX = lineCenterX - spheres.X[i];
-		float startLineToSphereDistY = lineCenterY - spheres.Y[i];
+		currentSphereLookup = SphereLookupTable[current_lockup_table][i];
+#if SPHERE_DEATH
+		if (sphere_hp[currentSphereLookup] <= 0)
+			continue;
+#endif
+		// If we have already found a sphere, check to see if we are closer to its stating position
+		// Due to branch prediction, the CPU will auto asume the result of this based on previous results making this check marganaly slow
+		if (line_sphere_index[worker_id] >= 0)
+		{
+			startSphereXDiffrence = line_position[0] - spheres.X[currentSphereLookup];
+			startSphereYDiffrence = line_position[1] - spheres.Y[currentSphereLookup];
 #if THREE_D
-		float startLineToSphereDistZ = lineCenterZ - spheres.Z[i];
+			startSphereZDiffrence = line_position[2] - spheres.Z[currentSphereLookup];
+#endif
+
+			lengthToStart = sqrt(
+				(startSphereXDiffrence * startSphereXDiffrence)
+				+ (startSphereYDiffrence * startSphereYDiffrence)
+#if THREE_D
+				+ (startSphereZDiffrence * startSphereZDiffrence)
+#endif
+			);
+			// If we are already further away from the start then the last found sphere, break
+			if (lengthToStart > line_sphere_colision_distance[worker_id])
+				continue;
+		}
+		// Work out the diffrence between the line center and the sphere
+		float startLineToSphereDistX = lineCenterX - spheres.X[currentSphereLookup];
+		float startLineToSphereDistY = lineCenterY - spheres.Y[currentSphereLookup];
+#if THREE_D
+		float startLineToSphereDistZ = lineCenterZ - spheres.Z[currentSphereLookup];
 #endif
 
 		float sphereToStartLength = sqrt(
@@ -1891,9 +2071,10 @@ void FindClosestLineIntersections()
 			+ (startLineToSphereDistY * startLineToSphereDistY)
 #if THREE_D
 			+ (startLineToSphereDistZ * startLineToSphereDistZ)
-#endif;
+#endif
 		);
 
+		// early breakout if the sphere is found to already be too far away
 		if (sphereToStartLength > llenHalf)
 		{
 			continue;
@@ -1904,25 +2085,25 @@ void FindClosestLineIntersections()
 
 
 		float dot = (
-			  ((spheres.X[i] - line_position[0]) * lineAltDistX)
-			+ ((spheres.Y[i] - line_position[1]) * lineAltDistY)
+			  ((spheres.X[currentSphereLookup] - line_position[0]) * (-lineDistX))
+			+ ((spheres.Y[currentSphereLookup] - line_position[1]) * (-lineDistY))
 #if THREE_D
-			+ ((spheres.Z[i] - line_position[2]) * lineAltDistZ)
-#endif;
+			+ ((spheres.Z[currentSphereLookup] - line_position[2]) * (-lineDistZ))
+#endif
 			) / linePow;
 
-		float closestX = line_position[0] + (dot * lineAltDistX);
-		float closestY = line_position[1] + (dot * lineAltDistY);
+		float closestX = line_position[0] + (dot * (-lineDistX));
+		float closestY = line_position[1] + (dot * (-lineDistY));
 #if THREE_D
-		float closestZ = line_position[2] + (dot * lineAltDistZ);
-#endif;
+		float closestZ = line_position[2] + (dot * (-lineDistZ));
+#endif
 
 
 
-		float lineToSphereDistX = closestX - spheres.X[i];
-		float lineToSphereDistY = closestY - spheres.Y[i];
+		float lineToSphereDistX = closestX - spheres.X[currentSphereLookup];
+		float lineToSphereDistY = closestY - spheres.Y[currentSphereLookup];
 #if THREE_D
-		float lineToSphereDistZ = closestZ - spheres.Z[i];
+		float lineToSphereDistZ = closestZ - spheres.Z[currentSphereLookup];
 #endif
 
 
@@ -1932,13 +2113,32 @@ void FindClosestLineIntersections()
 			+ (lineToSphereDistY * lineToSphereDistY)
 #if THREE_D
 			+ (lineToSphereDistZ * lineToSphereDistZ)
-#endif;
+#endif
 		);
 
-		if (sphereToClosest < spheres.Scale[i])
+		if (sphereToClosest < spheres.Scale[currentSphereLookup])
 		{
-			std::cout << "Line collided with" << i << std::endl;
-			return;
+			//std::cout << "Line collided with" << i << std::endl;
+
+			// If we have not found a closer sphere yet
+			// Due to branch prediction, the CPU will auto asume the result of this based on previous results making this check marganaly slow
+			if (line_sphere_index[worker_id] <0)
+			{
+				startSphereXDiffrence = line_position[0] - spheres.X[currentSphereLookup];
+				startSphereYDiffrence = line_position[1] - spheres.Y[currentSphereLookup];
+#if THREE_D
+				startSphereZDiffrence = line_position[2] - spheres.Z[currentSphereLookup];
+#endif
+				lengthToStart = sqrt(
+					(startSphereXDiffrence * startSphereXDiffrence)
+					+ (startSphereYDiffrence * startSphereYDiffrence)
+#if THREE_D
+					+ (startSphereZDiffrence * startSphereZDiffrence)
+#endif;
+				);
+			}
+			line_sphere_colision_distance[worker_id] = lengthToStart;
+			line_sphere_index[worker_id] = i;
 		}
 
 	}
@@ -2118,143 +2318,24 @@ void WorkerQuickSort(unsigned int worker_id, unsigned int offset, unsigned int c
 	QuickSort(offset, offset + count - 1);
 }
 
-__forceinline float NormaliseAxis(float a, float length)
-{
-	return a / length;
-}
 #if THREE_D
 
-void Reflect(float & rx, float & ry, float & rz, 
+inline void Reflect(float & rx, float & ry, float & rz, 
 	float vx, float vy, float vz, 
 	float nx, float ny, float nz)
 {
 	float dot = vx * nx + vy * ny + vz * nz;
-	rx = 2 * dot * nx - vx;
-	ry = 2 * dot * ny - vy;
-	rz = 2 * dot * nz - vz;
-}
-__forceinline float LengthOfVector(float x, float y, float z)
-{
-	return sqrt(x * x + y * y + z * z);
-}
-__forceinline float Dot(float x1, float x2, float y1, float y2, float z1, float z2)
-{
-	return x1 * x2 + y1 * y1 + z1 * z1;
-}
-
-__forceinline bool SphereColision(float s1x, float s1y, float s1z, float s1r, float s2x, float s2y, float s2z, float s2r,
-	float svx, float svy, float svz, float vl, float& distance)
-{
-	float Cx = s2x - s1x;
-	float Cy = s2y - s1y;
-	float Cz = s2z - s1z;
-	float lengthC = LengthOfVector(Cx, Cy, Cz);
-
-	float sumRadii = (s2r + s1r);
-
-	if (vl < lengthC - sumRadii)
-	{
-		return false;
-	}
-	float Nx = NormaliseAxis(svx, vl);
-	float Ny = NormaliseAxis(svy, vl);
-	float Nz = NormaliseAxis(svz, vl);
-
-	float D = Dot(Nx, Cx, Ny, Cy,Nz, Cz);
-
-	if (D <= 0)
-	{
-		return false;
-	}
-
-	float F = (lengthC * lengthC) - (D * D);
-
-	float sumRadiiSquared = sumRadii * sumRadii;
-	if (F >= sumRadiiSquared)
-	{
-		return false;
-	}
-
-	float T = sumRadiiSquared - F;
-
-	if (T < 0)
-	{
-		return false;
-	}
-	distance = D - sqrt(T);
-
-
-	if (vl < distance)
-	{
-		return false;
-	}
-
-	return true;
+	rx = vx - 2 * dot * nx;
+	ry = vy - 2 * dot * ny;
+	rz = vz - 2 * dot * nz;
 }
 #else
 
-void Reflect(float & rx, float & ry, float vx, float vy, float nx, float ny)
+inline void Reflect(float & rx, float & ry, float vx, float vy, float nx, float ny)
 {
 	float dot = vx * nx + vy * ny;
-	rx = 2 * dot * nx - vx;
-	ry = 2 * dot * ny - vy;
-}
-__forceinline float LengthOfVector(float x, float y)
-{
-	return sqrt(x * x + y * y);
-}
-__forceinline float Dot(float x1, float x2, float y1, float y2)
-{
-	return x1 * x2 + y1 * y1;
-}
-
-
-__forceinline bool CircleColision(float s1x, float s1y, float s1r, float s2x, float s2y, float s2r,
-	float svx, float svy, float vl, float& distance)
-{
-	float Cx = s2x - s1x;
-	float Cy = s2y - s1y;
-	float lengthC = LengthOfVector(Cx, Cy);
-
-	float sumRadii = (s2r + s1r);
-
-	if (vl < lengthC - sumRadii)
-	{
-		return false;
-	}
-	float Nx = NormaliseAxis(svx, vl);
-	float Ny = NormaliseAxis(svy, vl);
-
-	float D = Dot(Nx, Cx, Ny, Cy);
-
-	if (D <= 0)
-	{
-		return false;
-	}
-
-	float F = (lengthC * lengthC) - (D * D);
-
-	float sumRadiiSquared = sumRadii * sumRadii;
-	if (F >= sumRadiiSquared)
-	{
-		return false;
-	}
-
-	float T = sumRadiiSquared - F;
-
-	if (T < 0)
-	{
-		return false;
-	}
-	distance = D - sqrt(T);
-
-
-	if (vl < distance)
-	{
-		return false;
-	}
-
-	return true;
+	rx = vx - 2 * dot * nx;
+	ry = vy - 2 * dot * ny;
 }
 #endif
 
@@ -2263,7 +2344,8 @@ __forceinline bool CircleColision(float s1x, float s1y, float s1r, float s2x, fl
 
 
 
-
+// Collision detection solution found here https://www.gamasutra.com/view/feature/131424/pool_hall_lessons_fast_accurate_.php?print=1
+// Calculate the sphere to sphere calculate for the spheres
 void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned int b)
 {
 
@@ -2272,138 +2354,198 @@ void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned i
 	unsigned int max = offset + count;
 
 	unsigned int s1, s2, sphere1lookup, sphere2lookup;
+	// Sphere 1
+	float s1vx, s1vy, s1vl, s1x, s1y, s1r;
+	// Sphere 2
+	float s2x, s2y, s2r;
+
+	// Sphere-To-Sphere components
+	float distanceAV, Cx, Cy, lengthC, Nx, Ny, D, F, sumRadiiSquared, T, rx, ry;
+
+#if THREE_D
+	float s1vz, s1z, s2z, Cz, Nz, rz;
+#endif
 
 	for (s1 = offset; s1 < max; ++s1)
 	{
 		sphere1lookup = SphereLookupTable[current_lockup_table][s1];
-#if DELTA_TIME
-		float s1vx = velocity.X[sphere1lookup] * deltaTime;
-		float s1vy = velocity.Y[sphere1lookup] * deltaTime;
+		// Get all of the spheres components that we are checking movment for
+		s1vx = velocity.X[sphere1lookup];
+		s1vy = velocity.Y[sphere1lookup];
 #if THREE_D
-		float s1vz = velocity.Z[sphere1lookup] * deltaTime;
+		s1vz = velocity.Z[sphere1lookup];
 #endif
-#else
-		float s1vx = velocity.X[sphere1lookup];
-		float s1vy = velocity.Y[sphere1lookup];
+#if DELTA_TIME
+		s1vx *= deltaTime;
+		s1vy *= deltaTime;
 #if THREE_D
-		float s1vz = velocity.Z[sphere1lookup];
+		s1vz *= deltaTime;
 #endif
 #endif
 
+
+		// Get the spheres velocity vector length
+		s1vl = sqrt(
+			s1vx * s1vx + 
 #if THREE_D
-		float s1vl = LengthOfVector(s1vx, s1vy, s1vz);
-#else
-		float s1vl = LengthOfVector(s1vx, s1vy);
+			s1vz * s1vz +
 #endif
+			s1vy * s1vy
+		);
+
+		s1x = spheres.X[sphere1lookup];
+		s1y = spheres.Y[sphere1lookup];
+#if THREE_D
+		s1z = spheres.Z[sphere1lookup];
+#endif
+		s1r = spheres.Scale[sphere1lookup];
 
 		for (s2 = offset; s2 < max; ++s2)
 		{
 			if (s1 == s2)
 				continue;
 			sphere2lookup = SphereLookupTable[current_lockup_table][s2];
-#if DELTA_TIME
-			float s2vx = velocity.X[sphere2lookup] * deltaTime;
-			float s2vy = velocity.Y[sphere2lookup] * deltaTime;
+			// Get the spheres scale
+			s2r = spheres.Scale[sphere2lookup];
+			// Get the total radius amount
+			float sumRadii = (s2r + s1r);
+			s2y = spheres.Y[sphere2lookup];
+			// Since we are sorting the scene along the x or (z if in 3D) axis, if the y axis is already out of the scale range, continue
+			if (abs(s2y - s1y) > sumRadii)
+				continue;
+
+			// Now load the X axis since we know its feasible that the spheres could collide with the Y axis
+			s2x = spheres.X[sphere2lookup];
 #if THREE_D
-			float s2vz = velocity.Z[sphere2lookup] * deltaTime;
-#endif
-#else
-			float s2vx = velocity.X[sphere2lookup];
-			float s2vy = velocity.Y[sphere2lookup];
-#if THREE_D
-			float s2vz = velocity.Z[sphere2lookup];
-#endif
-#endif
-#if THREE_D
-			float s2vl = LengthOfVector(s2vx, s2vy, s2vz);
-#else
-			float s2vl = LengthOfVector(s2vx, s2vy);
+			// Since we are sorting the scene along the z axis, if the x axis is already out of the scale range, continue
+			if (abs(s2x - s1x) > sumRadii)
+				continue;
+			s2z = spheres.Z[sphere2lookup];
 #endif
 
-			float distanceAV;
+
+
+
+
+
+
+			// Get the distance between the two spheres
+			Cx = s2x - s1x;
+			Cy = s2y - s1y;
 #if THREE_D
-			if (SphereColision(spheres.X[sphere1lookup], spheres.Y[sphere1lookup], spheres.Z[sphere1lookup], spheres.Scale[sphere1lookup],
-				spheres.X[sphere2lookup], spheres.Y[sphere2lookup], spheres.Z[sphere2lookup], spheres.Scale[sphere2lookup],
-				s1vx, s1vy, s1vz, s1vl, distanceAV))
-			{
+			Cz = s2z - s1z;
+#endif
+			// Get the centere distance length
+			lengthC = sqrt(
+				Cx * Cx +
+#if THREE_D
+				Cz * Cz +
+#endif
+				Cy * Cy
+			);
+			// Is the length of the velocity vector larger then the distance between the two spheres - there rad
+			if (s1vl < lengthC - sumRadii)
+				continue;
 
-				s1vx = NormaliseAxis(s1vx, s1vl);
-				s1vy = NormaliseAxis(s1vy, s1vl);
-				s1vz = NormaliseAxis(s1vz, s1vl);
-				s1vx *= distanceAV;
-				s1vy *= distanceAV;
-				s1vz *= distanceAV;
+			// Get the normalised velocity vector
+			Nx = s1vx / s1vl;
+			Ny = s1vy / s1vl;
+#if THREE_D
+			Nz = s1vz / s1vl;
+#endif
 
+			// Calculate the first part of the length of the closest point along the velocity we get to before touching the sphere
+			// We do not do sqrt here as it is expensive and we can do a check before hand to get rid of some invalid cases
+			D = Nx * Cx +
+#if THREE_D
+				Nz * Cz +
+#endif
+				Ny * Cy;
+
+			if (D <= 0)
+				continue;
+
+			F = (lengthC * lengthC) - (D * D);
+
+			sumRadiiSquared = sumRadii * sumRadii;
+			if (F >= sumRadiiSquared)
+				continue;
+
+			T = sumRadiiSquared - F;
+
+			if (T < 0)
+				continue;
+			distanceAV = D - sqrt(T);
+
+			// Is the point we found in the range along the velocity vector
+			if (s1vl < distanceAV)
+				continue;
+
+			// Now we know there must have been a colision!!
+
+			{ // Move the sphere to the surface of the other sphere
+				s1vx = Nx * distanceAV;
 				spheres.X[sphere1lookup] += s1vx;
+
+				s1vy = Ny * distanceAV;
 				spheres.Y[sphere1lookup] += s1vy;
+
+#if THREE_D
+				s1vz = Nz * distanceAV;
 				spheres.Z[sphere1lookup] += s1vz;
-
-				float rx, ry, rz;
-
-				float s2vxn = NormaliseAxis(s2vx, s2vl);
-				float s2vyn = NormaliseAxis(s2vy, s2vl);
-				float s2vzn = NormaliseAxis(s2vz, s2vl);
+#endif
+			}
 
 
-				Reflect(rx, ry, rz, 
-					NormaliseAxis(velocity.X[sphere1lookup], s1vl), 
-					NormaliseAxis(velocity.Y[sphere1lookup], s1vl), 
-					NormaliseAxis(velocity.Z[sphere1lookup], s1vl),
-					s2vxn, s2vyn, s2vzn);
 
-				velocity.X[sphere1lookup] = rx * s1vl;
-				velocity.Y[sphere1lookup] = ry * s1vl;
-				velocity.Z[sphere1lookup] = rz * s1vl;
+			{ // Calculate the reflection of the sphere of the other sphere 
 
-#if DELTA_TIME
-				s1vx = velocity.X[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
-				s1vy = velocity.Y[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
-				s1vz = velocity.Z[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
+
+			// Recauclulate the vector between the two spheres and normalise it for the reflection calculation
+				Cx /= lengthC;
+				Cy /= lengthC;
+#if THREE_D
+				Cz /= lengthC;
+				// Cauculate a normalised reflection of the velocity of the other sphere
+				Reflect(
+					rx, ry, rz,
+					velocity.X[sphere1lookup], velocity.Y[sphere1lookup], velocity.Z[sphere1lookup],
+					Cx, Cy, Cz
+				);
 #else
+				// Cauculate a normalised reflection of the velocity of the other sphere
+				Reflect(
+					rx, ry,
+					velocity.X[sphere1lookup], velocity.Y[sphere1lookup],
+					Cx, Cy
+				);
+#endif
+				
+				// Store the velocity back in its array positions for future updates
+				velocity.X[sphere1lookup] = rx;
+				velocity.Y[sphere1lookup] = ry;
+#if THREE_D
+				velocity.Z[sphere1lookup] = rz;
+#endif
+			}
+
+			{ // Preform the final part of the spheres movment once it has bounced of the other sphere
 				s1vx = velocity.X[sphere1lookup] * abs(distanceAV - 1.0f);
 				s1vy = velocity.Y[sphere1lookup] * abs(distanceAV - 1.0f);
+#if THREE_D
 				s1vz = velocity.Z[sphere1lookup] * abs(distanceAV - 1.0f);
 #endif
-				break;
-
-		}
-#else
-			if (CircleColision(spheres.X[sphere1lookup], spheres.Y[sphere1lookup], spheres.Scale[sphere1lookup],
-				spheres.X[sphere2lookup], spheres.Y[sphere2lookup], spheres.Scale[sphere2lookup],
-				s1vx, s1vy, s1vl, distanceAV))
-			{
-
-				s1vx = NormaliseAxis(s1vx, s1vl);
-				s1vy = NormaliseAxis(s1vy, s1vl);
-				s1vx *= distanceAV;
-				s1vy *= distanceAV;
-
-				spheres.X[sphere1lookup] += s1vx;
-				spheres.Y[sphere1lookup] += s1vy;
-
-				float rx, ry;
-
-				float s2vxn = NormaliseAxis(s2vx, s2vl);
-				float s2vyn = NormaliseAxis(s2vy, s2vl);
-
-
-				Reflect(rx, ry, NormaliseAxis(velocity.X[sphere1lookup], s1vl), NormaliseAxis(velocity.Y[sphere1lookup], s1vl), s2vxn, s2vyn);
-
-				velocity.X[sphere1lookup] = rx * s1vl;
-				velocity.Y[sphere1lookup] = ry * s1vl;
 
 #if DELTA_TIME
-				s1vx = velocity.X[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
-				s1vy = velocity.Y[sphere1lookup] * deltaTime * abs(distanceAV - 1.0f);
-#else
-				s1vx = velocity.X[sphere1lookup] * abs(distanceAV - 1.0f);
-				s1vy = velocity.Y[sphere1lookup] * abs(distanceAV - 1.0f);
+				s1vx *= deltaTime;
+				s1vy *= deltaTime;
+#if THREE_D
+				s1vz *= deltaTime;
 #endif
-
-				break;
-
+#endif
 			}
-#endif
+
+			break;
 		}
 		spheres.X[sphere1lookup] += s1vx;
 		if (spheres.X[sphere1lookup] < kWallArea[0] || spheres.X[sphere1lookup] > kWallArea[1])
@@ -2418,7 +2560,6 @@ void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned i
 			velocity.Y[sphere1lookup] = -velocity.Y[sphere1lookup];
 			spheres.Y[sphere1lookup] += velocity.Y[sphere1lookup];
 		}
-
 #if THREE_D
 		spheres.Z[sphere1lookup] += s1vz;
 		if (spheres.Z[sphere1lookup] < kWallArea[0] || spheres.Z[sphere1lookup] > kWallArea[1])
@@ -2431,135 +2572,6 @@ void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned i
 
 }
 
-void WorkerAlphaSort(unsigned int worker_id, unsigned int offset, unsigned int count)
-{
-
-	unsigned int currentLookup;
-	float* position_buffer = reinterpret_cast<float*>(position_mapped_buffer_memory);
-	float* color_buffer = reinterpret_cast<float*>(color_mapped_buffer_memory);
-
-
-	// Loop unraveled transfer of colors to the GPU
-
-	unsigned int max = offset + count;
-	unsigned int color_max = max * 4;
-	for (unsigned int i = offset * 4, j = offset; i < color_max;)
-	{
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-		currentLookup = SphereLookupTable[current_lockup_table][j++] * 4;
-		color_buffer[i++] = sphere_color[currentLookup++]; // R
-		color_buffer[i++] = sphere_color[currentLookup++]; // G
-		color_buffer[i++] = sphere_color[currentLookup++]; // B
-		++i; // Alpha generated on GPU
-	}
-
-
-	// X position loop unraveled
-	for (unsigned int i = offset; i < max;)
-	{
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++] = spheres.X[SphereLookupTable[current_lockup_table][i]];
-	}
-	// Y position loop unraveled
-	for (unsigned int i = offset; i < max;)
-	{
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + sphere_count] = spheres.Y[SphereLookupTable[current_lockup_table][i]];
-	}
-	unsigned int position_offset = sphere_count * 2;
-#if THREE_D
-	// Z position loop unraveled
-	for (unsigned int i = offset; i < max;)
-	{
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Z[SphereLookupTable[current_lockup_table][i]];
-	}
-	position_offset += sphere_count;
-#endif
-	// Scale loop unraveled
-	for (unsigned int i = offset; i < max;)
-	{
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-		position_buffer[i++ + position_offset] = spheres.Scale[SphereLookupTable[current_lockup_table][i]];
-	}
-	
-}
 
 void WorkerBubbleSort(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
@@ -2865,44 +2877,6 @@ int main(int argc, char **argv)
 		syncDelta += deltaTime;
 		secondDelta += deltaTime;
 
-		if (secondDelta > 1.0f)
-		{
-			secondDelta -= 1.0f;
-			printf("%i\n", simulation_ticks);
-			simulation_ticks = 0;
-			GenerateNewRay();
-			FindClosestLineIntersections();
-		}
-#if VISUALISER
-		bool hasRendered = syncDelta > kTargetFPS;
-		if (hasRendered)
-		{
-			syncDelta -= kTargetFPS;
-
-
-#if RESOLVE_ALPHA_SORTING
-
-			StartTask(WorkerAlphaSort, sphere_count / NumWorkers, NumWorkers);
-			WaitForWorkers();
-
-#else
-			memcpy(
-				position_mapped_buffer_memory,                                           // The destination for our memory (GPU)
-				SphereData,                                                              // Source for the memory (CPU-Ram)
-				position_buffer_size                                                     // How much data we are transfering
-			);
-#endif
-
-
-
-			{ // Only use haveWork if other thread is not
-				std::unique_lock<std::mutex> lock(renderer_lock);
-				can_render = true;
-			}
-			render_work_ready.notify_one(); // Tell worker
-
-		}
-#endif
 
 		/*StartTask(WorkerSimulateSphere, sphere_worker_groups);
 		WaitForWorkers();*/
@@ -2962,16 +2936,86 @@ int main(int argc, char **argv)
 			} 
 		}
 
-
-		StartTask(WorkerCollisionDetection, sphere_count / AREA_SLICE_COUNT, AREA_SLICE_COUNT);
-		WaitForWorkers();
-
-		/*for (unsigned int j = 0; j < AREA_SLICE_COUNT; ++j)
+		if (secondDelta > 1.0f)
 		{
-			std::cout << SphereBoundariesEnd[j] - SphereBoundariesStart[j] << std::endl;
-		}*/
+			secondDelta -= 1.0f;
+			printf("Simulation UPS:%i\n", simulation_ticks);
+			simulation_ticks = 0;
+			GenerateNewRay();
 
-		simulation_ticks += 1;// 0;
+			StartTask(FindClosestLineIntersections, sphere_count / NumWorkers, NumWorkers);
+			WaitForWorkers();
+			int foundSphereIndex = -1;
+			float foundSphereDistance = 0.0f;
+
+			for (unsigned int i = 0; i < NumWorkers; ++i)
+			{
+				if (line_sphere_index[i] >= 0)
+				{
+					if (foundSphereIndex < 0 || line_sphere_colision_distance[i] < foundSphereDistance)
+					{
+						foundSphereIndex = line_sphere_index[i];
+						foundSphereDistance = line_sphere_colision_distance[i];
+					}
+				}
+			}
+
+			if (foundSphereIndex >= 0)
+			{
+				unsigned int sphereLookupIndex = SphereLookupTable[current_lockup_table][foundSphereIndex];
+				sphere_hp[sphereLookupIndex] -= kLaserDamage;
+				printf("Laser collided! Sphere: %.*s HP: %i\n",
+					sphere_name_length, &sphere_names[sphere_name_length * sphereLookupIndex], // Name
+					sphere_hp[sphereLookupIndex]);                                             // HP
+
+#if SPHERE_DEATH
+				if (sphere_hp[sphereLookupIndex] <= 0)
+					printf("Sphere %.*s died!\n",
+						sphere_name_length, &sphere_names[sphere_name_length * sphereLookupIndex]); // Name
+#endif
+			}
+
+		}
+
+#if VISUALISER
+		bool hasRendered = syncDelta > kTargetFPS;
+		if (hasRendered)
+		{
+			syncDelta -= kTargetFPS;
+
+
+#if RESOLVE_ALPHA_SORTING
+
+			StartTask(WorkerAlphaSort, sphere_count / NumWorkers, NumWorkers);
+			WaitForWorkers();
+
+#else
+			memcpy(
+				position_mapped_buffer_memory,                                           // The destination for our memory (GPU)
+				SphereData,                                                              // Source for the memory (CPU-Ram)
+				position_buffer_size                                                     // How much data we are transfering
+			);
+#endif
+
+
+
+			{ // Only use haveWork if other thread is not
+				std::unique_lock<std::mutex> lock(renderer_lock);
+				can_render = true;
+			}
+			render_work_ready.notify_one(); // Tell worker
+
+		}
+#endif
+#if SPHERE_TO_SPHERE_COLLISION
+		StartTask(WorkerCollisionDetection, sphere_count / AREA_SLICE_COUNT, AREA_SLICE_COUNT);
+#else
+		StartTask(WorkerSimulateSphere, sphere_count / AREA_SLICE_COUNT, AREA_SLICE_COUNT);
+#endif
+		WaitForWorkers();
+		
+
+		simulation_ticks += 1;
 
 #if VISUALISER
 		if (hasRendered)
