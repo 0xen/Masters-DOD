@@ -14,16 +14,24 @@
 #include <array>
 
 
-
+// Is 3D enbled
 #define THREE_D 0
-#define VISUALISER 1
-#define SPHERE_TO_SPHERE_COLLISION 1
+// Is the visuliser enabled
+#define VISUALISER 0
+// Is sphere to sphere colision enabled
+#define SPHERE_TO_SPHERE_COLLISION 0
+// Is sphere death enabled
 #define SPHERE_DEATH 1;
+// How many spheres should we render
 #define SPHERE_COUNT 38400
+// What FPS are we aiming for
 #define TARGET_FPS 30
+// How many worker threads are we to spawn
 #define WORKER_COUNT 128
+// How many areas we going to split the scene into
 #define AREA_SLICE_COUNT 128
-#define DELTA_TIME 1
+// Should we move the spheres at a constant speed
+#define DELTA_TIME 0
 
 
 #if VISUALISER
@@ -75,19 +83,27 @@ const unsigned sphere_worker_groups = sphere_count / NumWorkers;
 // These letters will make up the names of the spheres
 const char name_letters[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
 
+// Store the worker threads
 std::thread threads[NumWorkers];
+// Is there work ready for the thread
 std::condition_variable work_ready[NumWorkers];
+// Mustex used to protect the work threads
 std::mutex worker_mutex[NumWorkers];
+// Is there work ready for the thread
 bool have_work[NumWorkers];
+// Can we render this logic update
 bool can_render;
+// Is the render task done
 std::condition_variable render_work_ready;
+// What is the current delta time
 float deltaTime;
 
 
-// Used to store 
+// Used to store sphere's sorted lookup index
 unsigned int current_lockup_table = 0;
 unsigned int SphereLookupTable[2][sphere_count];
 
+// Stores information relates to the worker task 
 struct WorkerTask
 {
 	unsigned int offset;
@@ -95,6 +111,7 @@ struct WorkerTask
 	std::packaged_task<void(unsigned int, unsigned int, unsigned int)> task;
 };
 
+// Indevidual worker tasks
 WorkerTask tasks[NumWorkers];
 
 #if THREE_D
@@ -112,19 +129,21 @@ const unsigned int sphere_position_array_length = sphere_count * 3;
 const unsigned int sphere_velocity_array_size = sphere_count * 2;
 #endif
 
-
+// At compile time get the max length of the spheres name is names are base 16, EG name "F12A"
 constexpr unsigned int GetNumberOfDigits(unsigned int i)
 {
 	int digits = 0; 
 	while (i != 0) { i /= 16; digits++; }
 	return digits;
 }
-
+// Stores the name length of the spheres
 constexpr unsigned int sphere_name_length = GetNumberOfDigits(sphere_count);
+// How big is the name array
 const unsigned int sphere_name_array_size = sphere_name_length * sphere_count;
+// how big is the color array
 const unsigned int sphere_color_array_size = sphere_count * 4;
 
-
+// Store the spheres X, Y, Z and Scale
 static union
 {
 	struct
@@ -138,8 +157,11 @@ static union
 	}spheres;
 	float SphereData[sphere_position_array_length]{ 0.0f };
 };
+
+// Store the sphers names in the sphere name array
 char sphere_names[sphere_name_array_size]{ 0 };
 
+// Used to store the sphere velocity
 static union
 {
 	struct
@@ -153,11 +175,13 @@ static union
 	float sphere_velocity[sphere_velocity_array_size]{ 0 };
 };
 
+// Stores all the HP
 int sphere_hp[sphere_count]{ 0 };
 
+// Stores all the colors
 float sphere_color[sphere_color_array_size]{ 0 };
 
-
+// Store the lines start and end points
 float line_position[6]{ 0 };
 
 // If the worker fonud a sphere that the line collides with, how far from the start was it
@@ -174,13 +198,16 @@ int line_sphere_index[NumWorkers];
 #include <VkCore.hpp>
 #include <VkInitializers.hpp>
 
+
+// Is the window currently open
+bool window_open;
 #else
 // This type def comes with vulkan, if we dont have it normaly, include it here
 typedef unsigned int uint32_t;
 #endif
 
 
-
+// Wait for workers to finish there current tasks
 __forceinline void WaitForWorkers()
 {
 	for (int i = 0; i < NumWorkers; ++i)
@@ -193,6 +220,7 @@ __forceinline void WaitForWorkers()
 	}
 }
 
+// Spawns a worker and it will wait for a task
 void Worker(unsigned int id)
 {
 	srand(id);
@@ -206,11 +234,10 @@ void Worker(unsigned int id)
 				work_ready[id].wait(lock);
 			};
 		}
-
+		// Run the workers task
 		tasks[id].task(id, tasks[id].offset, tasks[id].count);
 
-
-		{
+		{ // Now the task is finished tell the main thread that
 			std::unique_lock<std::mutex> lock(worker_mutex[id]);
 			have_work[id] = false;
 		}
@@ -220,6 +247,7 @@ void Worker(unsigned int id)
 	}
 }
 
+// Start a new task
 __forceinline void StartTask(std::function<void(unsigned int, unsigned int, unsigned int)> funcPtr, unsigned int perWorker, unsigned int workerCount = NumWorkers)
 {
 	for (int i = 0; i < workerCount; ++i)
@@ -235,7 +263,6 @@ __forceinline void StartTask(std::function<void(unsigned int, unsigned int, unsi
 	}
 }
 Uint64 delta_time;
-//std::chrono::steady_clock::time_point last;
 float GetDeltaTime()
 {
 	Uint64 now = SDL_GetPerformanceCounter();
@@ -243,19 +270,9 @@ float GetDeltaTime()
 	delta_time = now;
 	return temp;
 
-	/*std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-
-
-	std::chrono::duration<double> time_span = std::chrono::duration_cast<std::chrono::duration<double>>(now - last);
-
-	last = now;
-
-	return time_span.count();*/
-
 }
 
 #if VISUALISER
-
 const float kTargetFPS = 1.0f / TARGET_FPS;
 
 std::thread renderer;
@@ -282,6 +299,7 @@ struct VertexData
 const unsigned int verticies_count = 4;
 const unsigned int indicies_count = 6;
 
+// The spheres quad verticies
 VertexData verticies[verticies_count] =
 {
 	{{-1.0f,-1.0f,0.0f},{-1.0f,-1.0f}},
@@ -290,41 +308,43 @@ VertexData verticies[verticies_count] =
 	{ {1.0f,-1.0f,0.0f},{1.0f,-1.0f}}
 };
 
+// The spheres draw indicies
 uint32_t indicies[indicies_count] = {
 	0,1,2,
 	0,3,1,
 };
 
-
+// The vertex and index buffer of the sphere
 VkDeviceSize vertex_buffer_size = sizeof(VertexData) * verticies_count;
 VkDeviceSize index_buffer_size = sizeof(uint32_t) * indicies_count;
 
-
+// Forward declare various needed functions for later
 void CreateRenderResources();
 void DestroyRenderResources();
 void RebuildRenderResources();
 void BuildCommandBuffers(std::unique_ptr<VkCommandBuffer>& command_buffers, const uint32_t buffer_count);
 
+// Vulkan Instance
 VkInstance instance;
 VkDebugReportCallbackEXT debugger;
 VkPhysicalDevice physical_device = VK_NULL_HANDLE;
 
 
+// All sphysical device properties
 uint32_t physical_devices_queue_family = 0;
 VkPhysicalDeviceProperties physical_device_properties;
 VkPhysicalDeviceFeatures physical_device_features;
 VkPhysicalDeviceMemoryProperties physical_device_mem_properties;
 
+// Vulkan device properties
 VkDevice device = VK_NULL_HANDLE;
 VkQueue graphics_queue = VK_NULL_HANDLE;
 VkQueue present_queue = VK_NULL_HANDLE;
 VkCommandPool command_pool;
 
-
+// How far is the camera zoomed in
 float camera_z = kCameraRange[0];
-
-
-bool window_open;
+// SDL window settings
 SDL_Window* window;
 SDL_SysWMinfo window_info;
 VkSurfaceCapabilitiesKHR surface_capabilities;
@@ -332,14 +352,17 @@ VkSurfaceKHR surface;
 uint32_t window_width;
 uint32_t window_height;
 
+// What format should we render using
 VkSurfaceFormatKHR surface_format;
 VkPresentModeKHR present_mode;
 
+// Swapchain settings
 VkSwapchainKHR swap_chain;
 std::unique_ptr<VkImage> swapchain_images;
 uint32_t swapchain_image_count;
 std::unique_ptr<VkImageView> swapchain_image_views;
 
+// Vulkan renderpass and framebuffers
 VkRenderPass renderpass = VK_NULL_HANDLE;
 std::unique_ptr<VkFramebuffer> framebuffers = nullptr;
 std::unique_ptr<VkHelper::VulkanAttachments> framebuffer_attachments = nullptr;
@@ -347,32 +370,35 @@ std::unique_ptr<VkHelper::VulkanAttachments> framebuffer_attachments = nullptr;
 uint32_t current_frame_index = 0; // What frame are we currently using
 std::unique_ptr<VkFence> fences = nullptr;
 
+// Mutex and semaphore locks used for locking the renderer
 VkSemaphore image_available_semaphore;
 VkSemaphore render_finished_semaphore;
 VkSubmitInfo sumbit_info = {};
 VkPresentInfoKHR present_info = {};
 VkPipelineStageFlags wait_stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
+// Command buffers for each swapchain images
 std::unique_ptr<VkCommandBuffer> graphics_command_buffers = nullptr;
 
-
+// Sphere pipeline settings
 VkPipeline sphere_graphics_pipeline = VK_NULL_HANDLE;
 VkPipelineLayout graphics_pipeline_layout = VK_NULL_HANDLE;
 const uint32_t sphere_shader_count = 2;
 std::unique_ptr<VkShaderModule> sphere_shader_modules = nullptr;
 
+// Line rendering pipeline settings
 VkPipeline line_graphics_pipeline = VK_NULL_HANDLE;
 VkPipelineLayout line_pipeline_layout = VK_NULL_HANDLE;
 const uint32_t line_shader_count = 2;
 std::unique_ptr<VkShaderModule> line_shader_modules = nullptr;
 
-
+// Vertex buffer settings
 VkBuffer vertex_buffer = VK_NULL_HANDLE;
 VkDeviceMemory vertex_buffer_memory = VK_NULL_HANDLE;
 // Raw pointer that will point to GPU memory
 void* vertex_mapped_buffer_memory = nullptr;
 
-
+// Index buffer settings
 VkBuffer index_buffer = VK_NULL_HANDLE;
 VkDeviceMemory index_buffer_memory = VK_NULL_HANDLE;
 // Raw pointer that will point to GPU memory
@@ -425,6 +451,7 @@ VkDescriptorPool line_descriptor_pool;
 VkDescriptorSetLayout line_descriptor_set_layout;
 VkDescriptorSet line_descriptor_set;
 
+// Create a new window and open it
 void WindowSetup(const char* title, int width, int height)
 {
 	window = SDL_CreateWindow(
@@ -444,6 +471,7 @@ void WindowSetup(const char* title, int width, int height)
 	assert(sucsess && "Error, unable to get window info");
 }
 
+// Pass the sphere count, aspect ratio and camera settings over to the gpu
 void UpdateGPUSettings(uint32_t sphere_count, float aspectRatio)
 {
 	uint32_t data[3]{ sphere_count };
@@ -467,6 +495,7 @@ void UpdateGPUSettings(uint32_t sphere_count, float aspectRatio)
 	);
 }
 
+// Update the game window
 void PollWindow()
 {
 
@@ -480,7 +509,7 @@ void PollWindow()
 		case SDL_QUIT:
 			window_open = false;
 			break;
-		case SDL_MOUSEWHEEL:
+		case SDL_MOUSEWHEEL: // Is the mouse wheel being moved
 			camera_z += event.wheel.y*50;
 			if (camera_z > kCameraRange[0])camera_z = kCameraRange[0];
 			if (camera_z < kCameraRange[1])camera_z = kCameraRange[1];
@@ -502,11 +531,14 @@ void PollWindow()
 		}
 	}
 }
+
+// Destroy the window
 void DestroyWindow()
 {
 	SDL_DestroyWindow(window);
 }
 
+// Create the surface we will be rendering to
 void CreateSurface()
 {
 	auto CreateWin32SurfaceKHR = (PFN_vkCreateWin32SurfaceKHR)vkGetInstanceProcAddr(instance, "vkCreateWin32SurfaceKHR");
@@ -1076,7 +1108,7 @@ void DestroyVulkan()
 	DestroyWindow();
 }
 
-
+// Create the common rendering resources
 void CreateRenderResources()
 {
 	swap_chain = VkHelper::CreateSwapchain(
@@ -1114,6 +1146,7 @@ void CreateRenderResources()
 	);
 }
 
+// once the application is done, destroy the rendering resources
 void DestroyRenderResources()
 {
 
@@ -1187,7 +1220,7 @@ void DestroyRenderResources()
 	}
 }
 
-
+// After a screen resize, revuild the renderpass
 void RebuildRenderResources()
 {
 	VkResult device_idle_result = vkDeviceWaitIdle(device);
@@ -1200,9 +1233,10 @@ void RebuildRenderResources()
 	UpdateGPUSettings(sphere_count, (float)window_width / (float)window_height);
 }
 
-
+// Rebuild the command buffers
 void BuildCommandBuffers(std::unique_ptr<VkCommandBuffer>& command_buffers, const uint32_t buffer_count)
 {
+	// Create the info to build a new render pass
 	VkCommandBufferBeginInfo command_buffer_begin_info = VkHelper::CommandBufferBeginInfo(VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
 
 	const float clear_color[4] = { 0.2f,0.2f,0.2f,1.0f };
@@ -1224,7 +1258,7 @@ void BuildCommandBuffers(std::unique_ptr<VkCommandBuffer>& command_buffers, cons
 	render_pass_info.pClearValues = clear_values;
 
 	VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-
+	// Loop through for each swapchain image and prepare there image
 	for (unsigned int i = 0; i < buffer_count; i++)
 	{
 		// Reset the command buffers
@@ -1248,7 +1282,7 @@ void BuildCommandBuffers(std::unique_ptr<VkCommandBuffer>& command_buffers, cons
 			VK_SUBPASS_CONTENTS_INLINE
 		);
 
-
+		// Define how large the laser will be
 		vkCmdSetLineWidth(
 			command_buffers.get()[i],
 			1.0f
@@ -1281,11 +1315,6 @@ void BuildCommandBuffers(std::unique_ptr<VkCommandBuffer>& command_buffers, cons
 			0,
 			1,
 			&scissor
-		);
-
-		vkCmdSetLineWidth(
-			command_buffers.get()[i],
-			1.0f
 		);
 
 		vkCmdBindPipeline(
@@ -1368,30 +1397,6 @@ void BuildCommandBuffers(std::unique_ptr<VkCommandBuffer>& command_buffers, cons
 			0,
 			0
 		);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-		/*vkCmdDrawIndexedIndirect(
-			command_buffers.get()[i],
-			m_indirect_draw_buffer->GetBufferData(BufferSlot::Primary)->buffer,
-			j * sizeof(VkDrawIndexedIndirectCommand),
-			1,
-			sizeof(VkDrawIndexedIndirectCommand));*/
-
-
 		vkCmdEndRenderPass(
 			command_buffers.get()[i]
 		);
@@ -1828,7 +1833,7 @@ void StartRenderer()
 	renderer = std::thread(RendererThread);
 }
 
-
+// If we are fixing the alpha sorting problem, pass the data to the GPU in the correct Z buffer order
 void WorkerAlphaSort(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 
@@ -1962,12 +1967,13 @@ void WorkerAlphaSort(unsigned int worker_id, unsigned int offset, unsigned int c
 #endif
 
 
-
+// Create a random number between the min max range
 __forceinline float Random(float min, float max)
 {
 	return min + static_cast <float> (rand()) / (static_cast <float> (RAND_MAX / (max - min)));
 }
 
+// Spawn a new ray
 void GenerateNewRay()
 {
 	line_position[0] = Random(kSpawnArea[0], kSpawnArea[1]);
@@ -1992,6 +1998,7 @@ void GenerateNewRay()
 }
 
 
+// Use the workers to find the closest sphere that intersects the line
 void FindClosestLineIntersections(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	// Get the diffrence between the two end points of all the 
@@ -2240,9 +2247,11 @@ void WorkerSetupSimulation(unsigned int worker_id, unsigned int offset, unsigned
 	}
 }
 
+// Setup the world
 void SetupSimulation()
 {
 	float sphere_rad = kSphereScale[1] / 2;
+	// Calculate the start and end positions of each area slice
 	for (unsigned int i = 0; i < AREA_SLICE_COUNT; ++i)
 	{
 		AreaSliceBoundariesStart[i] = kWallArea[0] + (kAreaSliceWidth * i) - sphere_rad;
@@ -2253,74 +2262,19 @@ void SetupSimulation()
 	// Reset delta time
 	delta_time = SDL_GetPerformanceCounter();
 
+	// Setup all workers
 	for (unsigned int i = 0; i < NumWorkers; i++)
 	{
 		threads[i] = std::thread(Worker, i);
 	}
-
-
+	
 	StartTask(WorkerSetupSimulation, sphere_worker_groups);
 	WaitForWorkers();
 }
 
-void swap(unsigned int* a, unsigned int* b)
-{
-	unsigned int t = *a;
-	*a = *b;
-	*b = t;
-}
-
-// Quicksort Solution https://www.geeksforgeeks.org/cpp-program-for-quicksort/
-__forceinline int QuicksortPartition(int low, int high)
-{
-#if THREE_D
-	float pivot = spheres.Z[SphereLookupTable[current_lockup_table][high]];    // pivot 
-#else
-	float pivot = spheres.X[SphereLookupTable[current_lockup_table][high]];    // pivot 
-#endif
-	int i = (low - 1);  // Index of smaller element 
-
-	for (int j = low; j <= high - 1; j++)
-	{
-		// If current element is smaller than or 
-		// equal to pivot 
-#if THREE_D
-		if (spheres.Z[SphereLookupTable[current_lockup_table][j]] <= pivot)
-#else
-		if (spheres.X[SphereLookupTable[current_lockup_table][j]] <= pivot)
-#endif
-		{
-			i++;
-			swap(&SphereLookupTable[current_lockup_table][i], &SphereLookupTable[current_lockup_table][j]);
-		}
-	}
-	swap(&SphereLookupTable[current_lockup_table][i + 1], &SphereLookupTable[current_lockup_table][high]);
-	return (i + 1);
-}
-
-
-void QuickSort(int low, int high)
-{
-	if (low < high)
-	{
-		/* pi is partitioning index, arr[p] is now
-		   at right place */
-		int pi = QuicksortPartition(low, high);
-
-		// Separately sort elements before 
-		// partition and after partition 
-		QuickSort(low, pi - 1);
-		QuickSort(pi + 1, high);
-	}
-}
-
-void WorkerQuickSort(unsigned int worker_id, unsigned int offset, unsigned int count)
-{
-	QuickSort(offset, offset + count - 1);
-}
 
 #if THREE_D
-
+// Calculate the 3D sphere reflection
 inline void Reflect(float & rx, float & ry, float & rz, 
 	float vx, float vy, float vz, 
 	float nx, float ny, float nz)
@@ -2331,7 +2285,7 @@ inline void Reflect(float & rx, float & ry, float & rz,
 	rz = vz - 2 * dot * nz;
 }
 #else
-
+// Calculate the 2D sphere reflection
 inline void Reflect(float & rx, float & ry, float vx, float vy, float nx, float ny)
 {
 	float dot = vx * nx + vy * ny;
@@ -2423,12 +2377,6 @@ void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned i
 				continue;
 			s2z = spheres.Z[sphere2lookup];
 #endif
-
-
-
-
-
-
 
 			// Get the distance between the two spheres
 			Cx = s2x - s1x;
@@ -2573,7 +2521,7 @@ void WorkerCollisionDetection(unsigned int worker_id, unsigned int a, unsigned i
 
 }
 
-
+// Preform a bubble sort on the sphere lookup array
 void WorkerBubbleSort(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	unsigned int max = offset + count;
@@ -2599,6 +2547,7 @@ void WorkerBubbleSort(unsigned int worker_id, unsigned int offset, unsigned int 
 	}
 }
 
+// Find the boundarys that sphere fall under
 void WorkerBoundaryFinder(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	// Used for loop index
@@ -2609,8 +2558,6 @@ void WorkerBoundaryFinder(unsigned int worker_id, unsigned int offset, unsigned 
 		WorkerAreaBoundaryChecksStart[worker_id][i] = -1;
 		WorkerAreaBoundaryChecksEnd[worker_id][i] = -1;
 	}
-
-
 
 
 	// What boundary are we looking for the largest sphere
@@ -2629,9 +2576,10 @@ void WorkerBoundaryFinder(unsigned int worker_id, unsigned int offset, unsigned 
 			bool start = spheres.X[SphereLookupTable[current_lockup_table][i]] > AreaSliceBoundariesStart[checkingBoundary];
 			bool end = spheres.X[SphereLookupTable[current_lockup_table][i]] < AreaSliceBoundariesEnd[checkingBoundary];
 #endif
+			// If a sphere is not between start and end, but not passed the end "yet"
 			if (!start && end)
 				continue;
-
+			// If the sphere is between the start and end
 			if (start && end)
 			{
 				if (WorkerAreaBoundaryChecksStart[worker_id][checkingBoundary] < 0)
@@ -2650,13 +2598,16 @@ void WorkerBoundaryFinder(unsigned int worker_id, unsigned int offset, unsigned 
 
 }
 
+// Merge the two arrays
 void WorkerMergeSortedArray(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	unsigned int half_way = count / 2;
 
+	// Get the two sorted arrays
 	unsigned int* sorted_array_1 = &SphereLookupTable[current_lockup_table][offset];
 	unsigned int* sorted_array_2 = &SphereLookupTable[current_lockup_table][offset + half_way];
 
+	// Get the array we are targeting to put the sorted data into
 	unsigned int* target_array = &SphereLookupTable[(current_lockup_table + 1) % 2][offset];
 
 	int i = 0, j = 0, k = 0;
@@ -2678,13 +2629,14 @@ void WorkerMergeSortedArray(unsigned int worker_id, unsigned int offset, unsigne
 		target_array[k++] = sorted_array_2[j++];
 
 }
-
+// If sphere to sphere collision is dissabled
 void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned int count)
 {
 	unsigned int end = offset + count;
 
 	float* AxisPtr = spheres.X + offset;
 	// X axis
+	// Loop through the axis moving each sphere by there X Velocity
 	for (uint32_t i = offset; i < end; )
 	{
 #if DELTA_TIME
@@ -2714,6 +2666,7 @@ void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned 
 
 	AxisPtr = spheres.X + offset;
 	// X axis
+	// Loop through the axis and make each sphere move back if they hit the boundary edge
 	for (uint32_t i = offset; i < end; i+=10)
 	{
 		if (*AxisPtr < kWallArea[0] || *AxisPtr > kWallArea[1]) *AxisPtr = -*AxisPtr;
@@ -2739,6 +2692,7 @@ void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned 
 	}
 	AxisPtr = spheres.Y + offset;
 	// Y Axis
+	// Loop through the axis moving each sphere by there Y Velocity
 	for (uint32_t i = offset; i < end;   )
 	{
 
@@ -2767,7 +2721,8 @@ void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned 
 #endif
 	}
 	AxisPtr = spheres.Y + offset;
-	// X axis
+	// Y axis
+	// Loop through the axis and make each sphere move back if they hit the boundary edge
 	for (uint32_t i = offset; i < end; i += 10)
 	{
 		if (*AxisPtr < kWallArea[0] || *AxisPtr > kWallArea[1]) *AxisPtr = -*AxisPtr;
@@ -2796,6 +2751,7 @@ void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned 
 	AxisPtr = spheres.Z + offset;
 	unsigned int arrayOffset = 2 * sphere_count;
 	// Z Axis
+	// Loop through the axis moving each sphere by there Z Velocity
 	for (uint32_t i = offset; i < end;)
 	{
 
@@ -2825,6 +2781,7 @@ void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned 
 }
 	AxisPtr = spheres.Z + offset;
 	// Z axis
+	// Loop through the axis and make each sphere move back if they hit the boundary edge
 	for (uint32_t i = offset; i < end; i += 10)
 	{
 		if (*AxisPtr < kWallArea[0] || *AxisPtr > kWallArea[1]) *AxisPtr = -*AxisPtr;
@@ -2856,60 +2813,68 @@ void WorkerSimulateSphere(unsigned int worker_id, unsigned int offset, unsigned 
 
 int main(int argc, char **argv)
 {
+	// Validate the sphere count is correct
 	static_assert((SPHERE_COUNT / NumWorkers) % 10 == 0, "Sphere count needs to be in multiples of 10 for worker thread grouping and loop unraveling");
 	static_assert(SPHERE_COUNT % 8 == 0, "Sphere count needs to be in powers of 2 for sorting optimization");
 	static_assert(SPHERE_COUNT % NumWorkers == 0, "Sphere count needs to be a multiple of NumWorkers");
+	// Load the simulation settings
 	SetupSimulation();
 
 #if VISUALISER
+	// Start the renderer
 	StartRenderer();
 #endif
-
-
-
 
 	float syncDelta = 0.0f;
 	float secondDelta = 0.0f;
 	unsigned int simulation_ticks = 0;
+	// Loop through untill the application stops
+	// If we are in the visuliser, stop when the window closes or stop when the console closes
+#if VISUALISER
+	while (window_open)
+#else
 	while (true)
+#endif
 	{
 
 		deltaTime = GetDeltaTime();
 		syncDelta += deltaTime;
 		secondDelta += deltaTime;
 
-
-		/*StartTask(WorkerSimulateSphere, sphere_worker_groups);
-		WaitForWorkers();*/
-		//StartTask(WorkerQuickSort, sphere_count / 16, 16);
+		// Preform a sort on the sphere lookup table
 		StartTask(WorkerBubbleSort, sphere_count / NumWorkers, NumWorkers);
 		WaitForWorkers();
 
-		StartTask(WorkerMergeSortedArray, sphere_count / 64, 64);
-		WaitForWorkers();
-		current_lockup_table = (current_lockup_table + 1) % 2;
+		// Merge the lookup table sorts together
+		{
+			StartTask(WorkerMergeSortedArray, sphere_count / 64, 64);
+			WaitForWorkers();
+			current_lockup_table = (current_lockup_table + 1) % 2;
 
-		StartTask(WorkerMergeSortedArray, sphere_count / 32, 32);
-		WaitForWorkers();
-		current_lockup_table = (current_lockup_table + 1) % 2;
+			StartTask(WorkerMergeSortedArray, sphere_count / 32, 32);
+			WaitForWorkers();
+			current_lockup_table = (current_lockup_table + 1) % 2;
 
-		StartTask(WorkerMergeSortedArray, sphere_count / 16, 16);
-		WaitForWorkers();
-		current_lockup_table = (current_lockup_table + 1) % 2;
+			StartTask(WorkerMergeSortedArray, sphere_count / 16, 16);
+			WaitForWorkers();
+			current_lockup_table = (current_lockup_table + 1) % 2;
 
-		StartTask(WorkerMergeSortedArray, sphere_count / 8, 8);
-		WaitForWorkers();
-		current_lockup_table = (current_lockup_table + 1) % 2;
+			StartTask(WorkerMergeSortedArray, sphere_count / 8, 8);
+			WaitForWorkers();
+			current_lockup_table = (current_lockup_table + 1) % 2;
 
-		StartTask(WorkerMergeSortedArray, sphere_count / 4, 4);
-		WaitForWorkers();
-		current_lockup_table = (current_lockup_table + 1) % 2;
+			StartTask(WorkerMergeSortedArray, sphere_count / 4, 4);
+			WaitForWorkers();
+			current_lockup_table = (current_lockup_table + 1) % 2;
 
-		StartTask(WorkerMergeSortedArray, sphere_count / 2, 2);
-		WaitForWorkers();
-		current_lockup_table = (current_lockup_table + 1) % 2;
-		WorkerMergeSortedArray(0, 0, sphere_count);
-		current_lockup_table = (current_lockup_table + 1) % 2;
+			StartTask(WorkerMergeSortedArray, sphere_count / 2, 2);
+			WaitForWorkers();
+			current_lockup_table = (current_lockup_table + 1) % 2;
+			WorkerMergeSortedArray(0, 0, sphere_count);
+			current_lockup_table = (current_lockup_table + 1) % 2;
+		}
+		
+
 
 		// If collision detection is dissabled, we do not need to find the bounderys of the areas
 		// as only sphere to sphere collision use this
@@ -2940,18 +2905,21 @@ int main(int argc, char **argv)
 			} 
 		}
 #endif
+		// Has a seccond passed
 		if (secondDelta > 1.0f)
 		{
 			secondDelta -= 1.0f;
 			printf("Simulation UPS:%i\n", simulation_ticks);
 			simulation_ticks = 0;
+			// Spawn a new ray
 			GenerateNewRay();
 
+			// Use the workers to find the closest sphere that intersects the line
 			StartTask(FindClosestLineIntersections, sphere_count / NumWorkers, NumWorkers);
 			WaitForWorkers();
 			int foundSphereIndex = -1;
 			float foundSphereDistance = 0.0f;
-
+			// Loop through the worker results and find the closest sphere
 			for (unsigned int i = 0; i < NumWorkers; ++i)
 			{
 				if (line_sphere_index[i] >= 0)
@@ -2963,16 +2931,18 @@ int main(int argc, char **argv)
 					}
 				}
 			}
-
+			// If we found a sphere
 			if (foundSphereIndex >= 0)
 			{
 				unsigned int sphereLookupIndex = SphereLookupTable[current_lockup_table][foundSphereIndex];
+				// Deal damage to the sphere
 				sphere_hp[sphereLookupIndex] -= kLaserDamage;
 				printf("Laser collided! Sphere: %.*s HP: %i\n",
 					sphere_name_length, &sphere_names[sphere_name_length * sphereLookupIndex], // Name
 					sphere_hp[sphereLookupIndex]);                                             // HP
 
 #if SPHERE_DEATH
+				// Output that the sphere is now dead
 				if (sphere_hp[sphereLookupIndex] <= 0)
 					printf("Sphere %.*s died!\n",
 						sphere_name_length, &sphere_names[sphere_name_length * sphereLookupIndex]); // Name
@@ -2982,16 +2952,24 @@ int main(int argc, char **argv)
 		}
 
 #if VISUALISER
+		// If we should be rendering
 		bool hasRendered = syncDelta > kTargetFPS;
 		if (hasRendered)
 		{
 			syncDelta -= kTargetFPS;
 
-
 #if RESOLVE_ALPHA_SORTING
-
+#if THREE_D
+			// If we are fixing the alpha sorting problem, pass the data to the GPU in the correct Z buffer order
 			StartTask(WorkerAlphaSort, sphere_count / NumWorkers, NumWorkers);
 			WaitForWorkers();
+#else
+			memcpy(
+				position_mapped_buffer_memory,                                           // The destination for our memory (GPU)
+				SphereData,                                                              // Source for the memory (CPU-Ram)
+				position_buffer_size                                                     // How much data we are transfering
+			);
+#endif
 
 #else
 			memcpy(
